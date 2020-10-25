@@ -3,10 +3,16 @@ name: Bug Report
 about: Got any issue?
 title: ''
 labels: ''
-assignees: ''
+assignees: 'xknat'
 
 ---
-
+```
+===========================================
+= WARNING! Github is only for code issue. =
+= For user support, go to our discord!    =
+= http://skinsrestorer.net/discord        =
+===========================================
+```
 ## Describe the bug
 A clear and concise description of what the bug is.
 
@@ -28,9 +34,14 @@ If applicable, add screenshots to help explain your problem.
 **On what platform does your server run? (Bungeecord/Spigot/Bukkit)**
 
 **What version? Do NOT answer LATEST**
-* SkinsRestorer: 13.6.2
-* Spigot/Bukkit/Bungeecord:
+* SkinsRestorer: 13.
+* Spigot version:
+* Bungeecord version: 
+* IF bungee, did you put the plugin on all servers: Yes / No
 * Java: 8
+* plugin list bungee & spigot:
+* MinecraftLauncher?:
+* if multiverse, (censored) worlds file:
 
 ## Logs
 Replace the links below by a paste of your startup logs (if you run a **Bungeecord** server, please send startup logs from **Bungeecord *AND* Spigot/Bukkit**)

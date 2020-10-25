@@ -15,6 +15,7 @@ public abstract class SkinFactory {
      * @param props - Property Object
      */
     public void applySkin(final Player p, Object props) {
+        // delay 1 servertick so we override online-mode
         Bukkit.getScheduler().scheduleSyncDelayedTask(SkinsRestorer.getInstance(), () -> {
             try {
                 if (props == null)
@@ -25,7 +26,10 @@ public abstract class SkinFactory {
                 Object propmap = ReflectionUtil.invokeMethod(profile.getClass(), profile, "getProperties");
                 ReflectionUtil.invokeMethod(propmap, "clear");
                 ReflectionUtil.invokeMethod(propmap.getClass(), propmap, "put", new Class[]{Object.class, Object.class}, "textures", props);
-                updateSkin(p);
+
+                Bukkit.getScheduler().runTaskAsynchronously(SkinsRestorer.getInstance(), () -> {
+                    updateSkin(p);
+                });
             } catch (Exception e) {
                 e.printStackTrace();
             }

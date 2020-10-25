@@ -31,12 +31,14 @@ public class GameProfileRequest {
         }
 
         // Don't change skin if player has no custom skin-name set and his username is invalid
-        if (plugin.getSkinStorage().getPlayerSkin(nick) == null && !C.validUsername(nick)) {
+        if (plugin.getSkinStorage().getPlayerSkin(nick) == null && !C.validUsername(nick.replaceAll("\\W", ""))) {
             System.out.println("[SkinsRestorer] Not applying skin to " + nick + " (invalid username).");
             return;
         }
 
         String skin = plugin.getSkinStorage().getDefaultSkinNameIfEnabled(nick);
+
+        //todo: default skinurl support
         e.setGameProfile(plugin.getSkinApplier().updateProfileSkin(e.getGameProfile(), skin));
     }
 }

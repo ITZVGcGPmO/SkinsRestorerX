@@ -4,8 +4,11 @@ import co.aikar.commands.BaseCommand;
 import co.aikar.commands.CommandHelp;
 import co.aikar.commands.annotation.*;
 import co.aikar.commands.velocity.contexts.OnlinePlayer;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.util.GameProfile;
+import skinsrestorer.shared.interfaces.ISrCommand;
 import skinsrestorer.shared.storage.Config;
 import skinsrestorer.shared.storage.Locale;
 import skinsrestorer.shared.utils.ServiceChecker;
@@ -27,7 +30,8 @@ public class SrCommand extends BaseCommand {
     }
 
     @HelpCommand
-    public static void onHelp(CommandSource source, CommandHelp help) {
+    @Syntax(" [help]")
+    public void onHelp(CommandSource source, CommandHelp help) {
         help.showHelp();
     }
 
@@ -43,7 +47,8 @@ public class SrCommand extends BaseCommand {
     @Subcommand("status") @CommandPermission("%srStatus")
     @Description("%helpSrStatus")
     public void onStatus(CommandSource source) {
-        source.sendMessage(plugin.deserialize("Checking needed services for SR to work properly..."));
+        source.sendMessage(plugin.deserialize("§3----------------------------------------------"));
+        source.sendMessage(plugin.deserialize("§7Checking needed services for SR to work properly..."));
 
         plugin.getService().execute(() -> {
             ServiceChecker checker = new ServiceChecker();
@@ -56,30 +61,42 @@ public class SrCommand extends BaseCommand {
             for (String result : results) {
                 source.sendMessage(plugin.deserialize(result));
             }
-            source.sendMessage(plugin.deserialize("Working UUID API count: " + response.getWorkingUUID()));
-            source.sendMessage(plugin.deserialize("Working Profile API count: " + response.getWorkingProfile()));
+            source.sendMessage(plugin.deserialize("§7Working UUID API count: §6" + response.getWorkingUUID()));
+            source.sendMessage(plugin.deserialize("§7Working Profile API count: §6" + response.getWorkingProfile()));
             if (response.getWorkingUUID() >= 1 && response.getWorkingProfile() >= 1)
-                source.sendMessage(plugin.deserialize("The plugin currently is in a working state."));
+                source.sendMessage(plugin.deserialize("§aThe plugin currently is in a working state."));
             else
-                source.sendMessage(plugin.deserialize("Plugin currently can't fetch new skins. You might check out our discord at https://discordapp.com/invite/012gnzKK9EortH0v2?utm_source=Discord%20Widget&utm_medium=Connect"));
-            source.sendMessage(plugin.deserialize("Finished checking services."));
+                source.sendMessage(plugin.deserialize("§cPlugin currently can't fetch new skins. You might check out our discord at https://discord.me/servers/skinsrestorer"));
+            source.sendMessage(plugin.deserialize("§3----------------------------------------------"));
+            source.sendMessage(plugin.deserialize("§7SkinsRestorer §6v" + plugin.getVersion()));
+            source.sendMessage(plugin.deserialize("§7Server: §6" + plugin.getProxy().getVersion()));
+            source.sendMessage(plugin.deserialize("§7BungeeMode: §6Velocity-Plugin"));
+            source.sendMessage(plugin.deserialize("§7Finished checking services."));
+            source.sendMessage(plugin.deserialize("§3----------------------------------------------"));
         });
     }
 
 
-    @Subcommand("drop") @CommandPermission("%srDrop")
-    @CommandCompletion("@players")
+    @Subcommand("drop|remove") @CommandPermission("%srDrop")
+    @CommandCompletion("player|skin @players")
     @Description("%helpSrDrop")
-    public void onDrop(CommandSource source, OnlinePlayer target) {
-        String player = target.getPlayer().getUsername();
-        plugin.getSkinStorage().removeSkinData(player);
-        source.sendMessage(plugin.deserialize(Locale.SKIN_DATA_DROPPED.replace("%player", player)));
+    @Syntax(" <player|skin> <target> [target2]")
+    public void onDrop(CommandSource source, PlayerOrSkin e, String[] targets) {
+        if (e.name().equalsIgnoreCase("player"))
+            for (String targetPlayer : targets)
+                plugin.getSkinStorage().removePlayerSkin(targetPlayer);
+        else
+            for (String targetSkin : targets)
+                plugin.getSkinStorage().removeSkinData(targetSkin);
+        String targetList = Arrays.toString(targets).substring(1, Arrays.toString(targets).length()-1);
+        source.sendMessage(plugin.deserialize(Locale.DATA_DROPPED.replace("%playerOrSkin", e.name()).replace("%targets", targetList)));
     }
 
 
     @Subcommand("props") @CommandPermission("%srProps")
     @CommandCompletion("@players")
     @Description("%helpSrProps")
+    @Syntax(" <target>")
     public void onProps(CommandSource source, OnlinePlayer target) {
         GameProfile.Property prop = target.getPlayer().getGameProfileProperties().get(0);
 
@@ -87,16 +104,29 @@ public class SrCommand extends BaseCommand {
             source.sendMessage(plugin.deserialize(Locale.NO_SKIN_DATA));
             return;
         }
-
-        source.sendMessage(plugin.deserialize("\n§aName: §8" + prop.getName()));
-        source.sendMessage(plugin.deserialize("\n§aValue : §8" + prop.getValue()));
-        source.sendMessage(plugin.deserialize("\n§aSignature : §8" + prop.getSignature()));
-
         byte[] decoded = Base64.getDecoder().decode(prop.getValue());
-        source.sendMessage(plugin.deserialize("\n§aValue Decoded: §e" + Arrays.toString(decoded)));
 
-        source.sendMessage(plugin.deserialize("\n§e" + Arrays.toString(decoded)));
+        String decodedString = new String(decoded);
+        JsonObject jsonObject = new JsonParser().parse(decodedString).getAsJsonObject();
+        String decodedSkin = jsonObject.getAsJsonObject().get("textures").getAsJsonObject().get("SKIN").getAsJsonObject().get("url").toString();
+        long timestamp = Long.parseLong(jsonObject.getAsJsonObject().get("timestamp").toString());
+        String requestDate = new java.text.SimpleDateFormat("MM/dd/yyyy HH:mm:ss").format(new java.util.Date (timestamp));
 
+        source.sendMessage(plugin.deserialize("§aRequest time: §e" + requestDate));
+        source.sendMessage(plugin.deserialize("§aprofileId: §e" + jsonObject.getAsJsonObject().get("profileId").toString()));
+        source.sendMessage(plugin.deserialize("§aName: §e" + jsonObject.getAsJsonObject().get("profileName").toString()));
+        source.sendMessage(plugin.deserialize("§aSkinTexture: §e" + decodedSkin.substring(1, decodedSkin.length()-1)));
         source.sendMessage(plugin.deserialize("§cMore info in console!"));
+
+        //console
+        System.out.println("\n§aName: §8" + prop.getName());
+        System.out.println("\n§aValue : §8" + prop.getValue());
+        System.out.println("\n§aSignature : §8" + prop.getSignature());
+        System.out.println("\n§aValue Decoded: §e" + Arrays.toString(decoded));
+    }
+
+    public enum PlayerOrSkin {
+        player,
+        skin,
     }
 }

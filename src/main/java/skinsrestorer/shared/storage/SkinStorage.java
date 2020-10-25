@@ -1,17 +1,9 @@
 package skinsrestorer.shared.storage;
 
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import lombok.Getter;
 import lombok.Setter;
-import org.yaml.snakeyaml.external.biz.base64Coder.Base64Coder;
-import skinsrestorer.bukkit.SkinsRestorer;
 import skinsrestorer.shared.exception.SkinRequestException;
-import skinsrestorer.shared.utils.MojangAPI;
-import skinsrestorer.shared.utils.MySQL;
-import skinsrestorer.shared.utils.Property;
-import skinsrestorer.shared.utils.ReflectionUtil;
+import skinsrestorer.shared.utils.*;
 
 import javax.sql.RowSet;
 import java.io.*;
@@ -72,16 +64,27 @@ public class SkinStorage {
     }
 
     public void preloadDefaultSkins() {
-        if (Config.DEFAULT_SKINS_ENABLED)
-            Config.DEFAULT_SKINS.forEach(skin -> {
-                try {
-                    this.setSkinData(skin, this.getMojangAPI().getSkinProperty(this.getMojangAPI().getUUID(skin)));
-                } catch (SkinRequestException e) {
-                    if (this.getSkinData(skin) == null)
-                        System.out.println("§e[§2SkinsRestorer§e] §cDefault Skin '" + skin + "' request error: " + e.getReason());
+        if (!Config.DEFAULT_SKINS_ENABLED)
+            return;
+
+        List<String> toRemove = new ArrayList<>();
+        Config.DEFAULT_SKINS.forEach(skin -> {
+            //todo: add try for skinUrl
+            try {
+                if (!C.validUrl(skin)) {
+                    this.getOrCreateSkinForPlayer(skin);
                 }
-            });
+            } catch (SkinRequestException e) {
+                //removing skin from list
+                toRemove.add(skin);
+                System.out.println("[SkinsRestorer] [WARNING] DefaultSkin '" + skin + "' could not be found or requested! Removing from list..");
+                if (Config.DEBUG)
+                    System.out.println("[SkinsRestorer] [DEBUG] DefaultSkin '" + skin + "' error: " + e.getReason());
+            }
+        });
+        Config.DEFAULT_SKINS.removeAll(toRemove);
     }
+
 
     public Object createProperty(String name, String value, String signature) {
         // use our own propery class if we are on skinsrestorer.sponge
@@ -109,7 +112,10 @@ public class SkinStorage {
      * <p>
      * Also, it schedules a skin update to stay up to date with skin changes.
      *
-     * @return Property object
+     * @param name   Player name to search skin for
+     * @param silent Whether to throw errors or not
+     * @return Property    Platform specific Property Object
+     * @throws SkinRequestException If MojangAPI lookup errors
      **/
     public Object getOrCreateSkinForPlayer(final String name, boolean silent) throws SkinRequestException {
         String skin = getPlayerSkin(name);
@@ -118,64 +124,19 @@ public class SkinStorage {
             skin = name.toLowerCase();
         }
 
-        // System.out.println("Skin: " + skin);
-
-        Object textures = null;
-        // if (Config.DEFAULT_SKINS_ENABLED) {
-        //     textures = getSkinData(Config.DEFAULT_SKINS.get(new Random().nextInt(Config.DEFAULT_SKINS.size())));
-        // }
-
-        textures = getSkinData(skin);
+        Object textures = getSkinData(skin);
 
         if (textures != null) {
             return textures;
         }
 
-        // Schedule skin update for next login
-        final String sname = skin;
-        final Object oldprops = textures;
         // No cached skin found, get from MojangAPI, save and return
         try {
-            Object props = null;
-
-            textures = this.getMojangAPI().getSkinProperty(this.getMojangAPI().getUUID(sname));
-
-            boolean shouldUpdate = false;
-
-            String value = Base64Coder.decodeString((String) ReflectionUtil.invokeMethod(textures, "getValue"));
-
-            JsonElement element = new JsonParser().parse(value);
-            JsonObject obj = element.getAsJsonObject();
-            JsonObject textureObj = obj.get("textures").getAsJsonObject();
-
-            String newurl;
-            if (textureObj.has("SKIN")) {
-                newurl = textureObj.get("SKIN").getAsJsonObject().get("url").getAsString();
+            textures = this.getMojangAPI().getSkinProperty(this.getMojangAPI().getUUID(skin));
+            if (textures == null) {
+                throw new SkinRequestException(Locale.ERROR_NO_SKIN);
             }
-
-            // TODO: This is useless! oldprops is always null and always triggers an "shouldUpdate".
-            /*try {
-                value = Base64Coder.decodeString((String) ReflectionUtil.invokeMethod(oldprops, "getValue"));
-
-                String oldurl = MojangAPI.getStringBetween(value, urlbeg, urlend);
-
-                System.out.println("oldurl: " + oldurl);
-
-                shouldUpdate = !oldurl.equals(newurl);
-            } catch (Exception e) {
-                e.printStackTrace();
-                shouldUpdate = true;
-            }*/
-
-            setSkinData(sname, textures);
-
-            if (shouldUpdate)
-                if (isBungee) {
-                    // skinsrestorer.bungee.SkinApplier.applySkin(name);
-                    skinsrestorer.bungee.SkinsRestorer.getInstance().getSkinApplier().applySkin(name);
-                } else {
-                    SkinsRestorer.getInstance().getFactory().applySkin(org.bukkit.Bukkit.getPlayer(name), textures);
-                }
+            setSkinData(skin, textures);
         } catch (SkinRequestException e) {
             if (!silent)
                 throw new SkinRequestException(e.getReason());
@@ -192,21 +153,22 @@ public class SkinStorage {
         return getOrCreateSkinForPlayer(name, false);
     }
 
-    /*
+    /**
      * Returns the custom skin name that player has set.
      *
-     * Returns null if player has no custom skin set. (even if its his own name)
-     */
+     * Returns null if player has no custom skin set.
+     **/
     public String getPlayerSkin(String name) {
         name = name.toLowerCase();
         if (Config.USE_MYSQL) {
-            RowSet crs = mysql.query("select * from " + Config.MYSQL_PLAYERTABLE + " where Nick=?", name);
+            RowSet crs = mysql.query("SELECT * FROM " + Config.MYSQL_PLAYERTABLE + " WHERE Nick=?", name);
 
             if (crs != null)
                 try {
                     String skin = crs.getString("Skin");
 
-                    if (skin.isEmpty() || skin.equalsIgnoreCase(name)) {
+                    //maybe useless
+                    if (skin.isEmpty()) {
                         removePlayerSkin(name);
                         return null;
                     }
@@ -217,11 +179,10 @@ public class SkinStorage {
                     e.printStackTrace();
                 }
 
-            return null;
-
         } else {
-            File playerFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Players" + File.separator + name + ".player");
+            //Escape all windows / linux forbidden printable ASCII characters
+            name = name.replaceAll("[\\\\/:*?\"<>|]", "·");
+            File playerFile = new File(folder.getAbsolutePath() + File.separator + "Players" + File.separator + name + ".player");
 
             try {
                 if (!playerFile.exists())
@@ -235,43 +196,48 @@ public class SkinStorage {
 
                 buf.close();
 
-                assert skin != null;
-                if (skin.equalsIgnoreCase(name))
-                    playerFile.delete();
+                //maybe useless
+                if (skin == null) {
+                    removePlayerSkin(name);
+                    return null;
+                }
 
                 return skin;
 
             } catch (IOException e) {
                 e.printStackTrace();
             }
-
-            return name;
         }
+
+        return null;
     }
 
     /**
      * Returns property object containing skin data of the wanted skin
+     *
+     * @param name           - Skin name
+     * @param updateOutdated - On true we update the skin if expired
      **/
-    public Object getSkinData(String name) {
+    //getSkinData also create while we have getOrCreateSkinForPlayer
+    public Object getSkinData(String name, boolean updateOutdated) {
         name = name.toLowerCase();
-        if (Config.USE_MYSQL) {
 
-            RowSet crs = mysql.query("select * from " + Config.MYSQL_SKINTABLE + " where Nick=?", name);
+        if (Config.USE_MYSQL) {
+            RowSet crs = mysql.query("SELECT * FROM " + Config.MYSQL_SKINTABLE + " WHERE Nick=?", name);
             if (crs != null)
                 try {
                     String value = crs.getString("Value");
                     String signature = crs.getString("Signature");
                     String timestamp = crs.getString("timestamp");
 
-                    if (isOld(Long.valueOf(timestamp))) {
-                        //removeSkinData(name); Remove that cause its useless
+                    if (updateOutdated && isOld(Long.parseLong(timestamp))) {
                         Object skin = this.getMojangAPI().getSkinProperty(this.getMojangAPI().getUUID(name));
                         if (skin != null) {
                             this.setSkinData(name, skin);
-                            //TODO: return skin object from MojangAPI instead old one!
-                            //return skin;
+                            return skin;
                         }
                     }
+
                     return createProperty("textures", value, signature);
 
                 } catch (Exception e) {
@@ -279,11 +245,8 @@ public class SkinStorage {
                     System.out.println("[SkinsRestorer] Unsupported player format.. removing (" + name + ").");
                 }
 
-            return null;
-
         } else {
-            File skinFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
+            File skinFile = new File(folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
 
             try {
                 if (!skinFile.exists())
@@ -302,14 +265,15 @@ public class SkinStorage {
                             timestamp = line;
                         }
                 buf.close();
-                if (isOld(Long.valueOf(timestamp))) {
-                    //removeSkinData(name);
+
+                if (updateOutdated && isOld(Long.parseLong(timestamp))) {
                     Object skin = this.getMojangAPI().getSkinProperty(this.getMojangAPI().getUUID(name));
                     if (skin != null) {
                         this.setSkinData(name, skin);
-                        //TODO: return skin object from MojangAPI instead old one!
+                        return skin;
                     }
                 }
+
                 return this.createProperty("textures", value, signature);
 
             } catch (Exception e) {
@@ -317,8 +281,13 @@ public class SkinStorage {
                 System.out.println("[SkinsRestorer] Unsupported player format.. removing (" + name + ").");
             }
 
-            return null;
+
         }
+        return null;
+    }
+
+    public Object getSkinData(String name) {
+        return this.getSkinData(name, true);
     }
 
     private boolean isOld(long timestamp) {
@@ -332,16 +301,16 @@ public class SkinStorage {
      **/
     public void removePlayerSkin(String name) {
         name = name.toLowerCase();
-        if (Config.USE_MYSQL)
-            mysql.execute("delete from " + Config.MYSQL_PLAYERTABLE + " where Nick=?", name);
-        else {
-            File playerFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Players" + File.separator + name + ".player");
+        if (Config.USE_MYSQL) {
+            mysql.execute("DELETE FROM " + Config.MYSQL_PLAYERTABLE + " WHERE Nick=?", name);
+        } else {
+            //Escape all windows / linux forbidden printable ASCII characters
+            name = name.replaceAll("[\\\\/:*?\"<>|]", "·");
+            File playerFile = new File(folder.getAbsolutePath() + File.separator + "Players" + File.separator + name + ".player");
 
             if (playerFile.exists())
                 playerFile.delete();
         }
-
     }
 
     /**
@@ -351,20 +320,18 @@ public class SkinStorage {
      **/
     public void removeSkinData(String name) {
         name = name.toLowerCase();
-        if (Config.USE_MYSQL)
-            mysql.execute("delete from " + Config.MYSQL_SKINTABLE + " where Nick=?", name);
-        else {
-            File skinFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
+        if (Config.USE_MYSQL) {
+            mysql.execute("DELETE FROM " + Config.MYSQL_SKINTABLE + " WHERE Nick=?", name);
+        } else {
+            File skinFile = new File(folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
 
             if (skinFile.exists())
                 skinFile.delete();
         }
-
     }
 
     /**
-     * Saves custom player's skin name to dabase
+     * Saves custom player's skin name to database
      *
      * @param name - Players name
      * @param skin - Skin name
@@ -372,22 +339,19 @@ public class SkinStorage {
     public void setPlayerSkin(String name, String skin) {
         name = name.toLowerCase();
         if (Config.USE_MYSQL) {
-            RowSet crs = mysql.query("select * from " + Config.MYSQL_PLAYERTABLE + " where Nick=?", name);
+            //todo optimization
+            RowSet crs = mysql.query("SELECT * FROM " + Config.MYSQL_PLAYERTABLE + " WHERE Nick=?", name);
 
             if (crs == null)
-                mysql.execute("insert into " + Config.MYSQL_PLAYERTABLE + " (Nick, Skin) values (?,?)", name, skin);
+                mysql.execute("INSERT INTO " + Config.MYSQL_PLAYERTABLE + " (Nick, Skin) VALUES (?,?)", name, skin);
             else
-                mysql.execute("update " + Config.MYSQL_PLAYERTABLE + " set Skin=? where Nick=?", skin, name);
+                mysql.execute("UPDATE " + Config.MYSQL_PLAYERTABLE + " SET Skin=? WHERE Nick=?", skin, name);
         } else {
-            File playerFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Players" + File.separator + name + ".player");
+            //Escape all windows / linux forbidden printable ASCII characters
+            name = name.replaceAll("[\\\\/:*?\"<>|]", "·");
+            File playerFile = new File(folder.getAbsolutePath() + File.separator + "Players" + File.separator + name + ".player");
 
             try {
-                if (skin.equalsIgnoreCase(name) && playerFile.exists()) {
-                    playerFile.delete();
-                    return;
-                }
-
                 if (!playerFile.exists())
                     playerFile.createNewFile();
 
@@ -404,8 +368,8 @@ public class SkinStorage {
     /**
      * Saves skin data to database
      *
-     * @param name     - Skin name
-     * @param textures - Property object
+     * @param name      - Skin name
+     * @param textures  - Property object
      * @param timestamp - timestamp string in millis
      **/
     public void setSkinData(String name, Object textures, String timestamp) {
@@ -420,17 +384,16 @@ public class SkinStorage {
         }
 
         if (Config.USE_MYSQL) {
-            RowSet crs = mysql.query("select * from " + Config.MYSQL_SKINTABLE + " where Nick=?", name);
+            RowSet crs = mysql.query("SELECT * FROM " + Config.MYSQL_SKINTABLE + " WHERE Nick=?", name);
 
             if (crs == null)
-                mysql.execute("insert into " + Config.MYSQL_SKINTABLE + " (Nick, Value, Signature, timestamp) values (?,?,?,?)",
+                mysql.execute("INSERT INTO " + Config.MYSQL_SKINTABLE + " (Nick, Value, Signature, timestamp) VALUES (?,?,?,?)",
                         name, value, signature, timestamp);
             else
-                mysql.execute("update " + Config.MYSQL_SKINTABLE + " set Value=?, Signature=?, timestamp=? where Nick=?", value,
-                        signature, timestamp, name);
+                mysql.execute("UPDATE " + Config.MYSQL_SKINTABLE + " SET Value=?, Signature=?, timestamp=? WHERE Nick=?",
+                        value, signature, timestamp, name);
         } else {
-            File skinFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
+            File skinFile = new File(folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
 
             try {
                 if (value.isEmpty() || signature.isEmpty() || timestamp.isEmpty())
@@ -453,30 +416,71 @@ public class SkinStorage {
         setSkinData(name, textures, Long.toString(System.currentTimeMillis()));
     }
 
-    public  Map<String, Object> getSkins(int number) {
+    //todo: CUSTOM_GUI
+    // seems to be that crs order is ignored...
+    public Map<String, Object> getSkins(int number) {
+        //Using mysql
         if (Config.USE_MYSQL) {
-            Map<String, Object> list = new TreeMap<String, Object>();
-            RowSet crs = mysql.query("select * from " + Config.MYSQL_SKINTABLE + " ORDER BY `Nick`");
+            Map<String, Object> list = new TreeMap<>();
+            String filterBy = "";
+            String orderBy = "Nick";
+
+            // custom gui
+            if (Config.CUSTOM_GUI_ENABLED) {
+                if (Config.CUSTOM_GUI_ONLY) {
+                    StringBuilder sb = new StringBuilder();
+                    Config.CUSTOM_GUI_SKINS.forEach(skin -> {
+                        sb.append("|").append(skin);
+                    });
+                    filterBy = " WHERE Nick RLIKE '" + sb.substring(1) + "'";
+                } else {
+                    StringBuilder sb = new StringBuilder();
+                    Config.CUSTOM_GUI_SKINS.forEach(skin -> {
+                        sb.append(", '").append(skin).append("'");
+                    });
+                    orderBy = "FIELD(Nick" + sb + ") DESC, Nick";
+                }
+            }
+
+            RowSet crs = mysql.query("SELECT Nick, Value, Signature FROM " + Config.MYSQL_SKINTABLE + filterBy + " ORDER BY " + orderBy);
             int i = 0;
             try {
                 do {
                     if (i >= number)
-                        list.put(crs.getString("Nick"), createProperty("textures", crs.getString("Value"), crs.getString("Signature")));
+                        list.put(crs.getString("Nick").toLowerCase(), createProperty("textures", crs.getString("Value"), crs.getString("Signature")));
                     i++;
                 } while (crs.next());
             } catch (java.sql.SQLException ignored) {
             }
             return list;
+
+            // When not using mysql
         } else {
-            Map<String, Object> list = new TreeMap<String, Object>();
-            String path = SkinsRestorer.getInstance().getDataFolder() + "/Skins/";
+            Map<String, Object> list = new TreeMap<>();
+            String path = folder.getAbsolutePath() + File.separator + "Skins" + File.separator;
             File folder = new File(path);
-            String[] fileNames = folder.list();
+
+            //filter out non "*.skin" files.
+            FilenameFilter skinFileFilter = (dir, name) -> name.endsWith(".skin");
+
+            String[] fileNames = folder.list(skinFileFilter);
+
+            if (fileNames == null)
+                return list;
+
+            Arrays.sort(fileNames);
             int i = 0;
-            assert fileNames != null;
             for (String file : fileNames) {
+                String skinName = file.replace(".skin", "");
                 if (i >= number) {
-                    list.put(file.replace(".skin", ""), this.getSkinDataMenu(file.replace(".skin", "")));
+                    if (Config.CUSTOM_GUI_ONLY){ //Show only Config.CUSTOM_GUI_SKINS in the gui
+                        for (String Guiskins : Config.CUSTOM_GUI_SKINS){
+                            if (skinName.toLowerCase().contains(Guiskins.toLowerCase()))
+                                list.put(skinName.toLowerCase(), this.getSkinData(skinName, false));
+                        }
+                    } else {
+                        list.put(skinName.toLowerCase(), this.getSkinData(skinName, false));
+                    }
                 }
                 i++;
             }
@@ -484,80 +488,119 @@ public class SkinStorage {
         }
     }
 
-
-    //Getting skin data for menu
-    public Object getSkinDataMenu(String name) {
-        name = name.toLowerCase();
+    // Todo: remove duplicated code and use existing methods....
+    // Todo: needs a lot refactoring!
+    // Todo: We should _always_ return our own Property object and cast to the platform specific one just before actually setting the skin.
+    // Todo: That should save lots of duplicated code
+    public Map<String, Property> getSkinsRaw(int number) {
+        Map<String, Property> list = new TreeMap<>();
         if (Config.USE_MYSQL) {
-
-            RowSet crs = mysql.query("select * from " + Config.MYSQL_SKINTABLE + " where Nick=?", name);
-            if (crs != null)
-                try {
-                    String value = crs.getString("Value");
-                    String signature = crs.getString("Signature");
-                    @SuppressWarnings("unused")
-                    String timestamp = crs.getString("timestamp");
-
-                    return createProperty("textures", value, signature);
-
-                } catch (Exception e) {
-                    System.out.println("[SkinsRestorer] Unsupported player format.. removing (" + name + ").");
-                }
-
-            return null;
-
-        } else {
-            File skinFile = new File(
-                    folder.getAbsolutePath() + File.separator + "Skins" + File.separator + name + ".skin");
-
+            RowSet crs = mysql.query("SELECT Nick, Value, Signature FROM " + Config.MYSQL_SKINTABLE + " ORDER BY `Nick`");
+            int i = 0;
+            int foundSkins = 0;
             try {
-                if (!skinFile.exists())
-                    return null;
-
-                BufferedReader buf = new BufferedReader(new FileReader(skinFile));
-
-                @SuppressWarnings("unused")
-                String line, value = "", signature = "", timestamp = "";
-                for (int i = 0; i < 3; i++)
-                    if ((line = buf.readLine()) != null)
-                        if (value.isEmpty()) {
-                            value = line;
-                        } else if (signature.isEmpty()) {
-                            signature = line;
-                        } else {
-                            timestamp = line;
-                        }
-                buf.close();
-                return this.createProperty("textures", value, signature);
-
-            } catch (Exception e) {
-                System.out.println("[SkinsRestorer] Unsupported player format.. removing (" + name + ").");
+                do {
+                    if (i >= number && foundSkins <= 26) {
+                        Property prop = new Property();
+                        prop.setName("textures");
+                        prop.setValue(crs.getString("Value"));
+                        prop.setSignature(crs.getString("Signature"));
+                        list.put(crs.getString("Nick"), prop);
+                        foundSkins++;
+                    }
+                    i++;
+                } while (crs.next());
+            } catch (java.sql.SQLException ignored) {
+                ignored.printStackTrace();
             }
+        } else {
+            String path = folder.getAbsolutePath() + File.separator + "Skins" + File.separator;
+            File folder = new File(path);
 
-            return null;
+            //filter out non "*.skin" files.
+            FilenameFilter skinFileFilter = (dir, name) -> name.endsWith(".skin");
+
+            String[] fileNames = folder.list(skinFileFilter);
+
+            if (fileNames == null)
+                return list;
+
+            Arrays.sort(fileNames);
+            int i = 0;
+            int foundSkins = 0;
+            for (String file : fileNames) {
+                String skinName = file.replace(".skin", "");
+
+                File skinFile = new File(path + file);
+                if (i >= number && foundSkins <= 26) {
+
+                    try {
+                        if (!skinFile.exists())
+                            return null;
+
+                        BufferedReader buf = new BufferedReader(new FileReader(skinFile));
+
+                        String line, value = "", signature = "", timestamp = "";
+                        for (int i2 = 0; i2 < 3; i2++)
+                            if ((line = buf.readLine()) != null)
+                                if (value.isEmpty()) {
+                                    value = line;
+                                } else if (signature.isEmpty()) {
+                                    signature = line;
+                                } else {
+                                    timestamp = line;
+                                }
+                        buf.close();
+
+                        Property prop = new Property();
+                        prop.setName("textures");
+                        prop.setValue(value);
+                        prop.setSignature(signature);
+                        list.put(skinName, prop);
+
+                        foundSkins++;
+
+                    } catch (Exception ignored) {
+                    }
+                }
+                i++;
+            }
         }
+        return list;
     }
 
-
+    // skin update [include custom skin flag]
     public boolean forceUpdateSkinData(String skin) {
         try {
-            Object textures = this.getMojangAPI().getSkinPropertyBackup(this.getMojangAPI().getUUIDBackup(skin));
+            Object textures = this.getMojangAPI().getSkinPropertyMojang(this.getMojangAPI().getUUIDMojang(skin));
             if (textures != null) {
                 this.setSkinData(skin, textures);
                 return true;
             }
-            return false;
         } catch (Exception e) {
             e.printStackTrace();
-            return false;
         }
+        return false;
     }
 
-
     // If clear is true, it doesn't return the custom skin a user has set
+
+    /**
+     * Filters player name to exclude non [a-z_]
+     * Checks and process default skin.
+     * IF no default skin:
+     * 1: Return player if clear
+     * 2: Return skin if found
+     * Else: return player
+     * @param player      - Player name
+     * @param clear       - Should we ignore player set skin?
+     * @return            - setSkin or DefaultSkin, if player has no setSkin or default skin, we return his name
+     */
     public String getDefaultSkinNameIfEnabled(String player, boolean clear) {
-        if (Config.DEFAULT_SKINS_ENABLED) {
-            // dont return default skin name for premium players if enabled
+        // Remove all non [a-z_] chars to allow pre/sub fixes
+        player = player.replaceAll("\\W", "");
+        if (Config.DEFAULT_SKINS_ENABLED && !Config.DEFAULT_SKINS.isEmpty()) {
+            // don't return default skin name for premium players if enabled
             if (!Config.DEFAULT_SKINS_PREMIUM) {
                 // check if player is premium
                 try {
@@ -572,9 +615,11 @@ public class SkinStorage {
 
             // return default skin name if user has no custom skin set or we want to clear to default
             if (this.getPlayerSkin(player) == null || clear) {
-                List<String> skins = Config.DEFAULT_SKINS;
-                int randomNum = (int) (Math.random() * skins.size());
-                String randomSkin = skins.get(randomNum);
+                final List<String> skins = Config.DEFAULT_SKINS;
+                int r = 0;
+                if (skins.size() > 1)
+                    r = (int) (Math.random() * skins.size());
+                String randomSkin = skins.get(r);
                 // return player name if there are no default skins set
                 return randomSkin != null ? randomSkin : player;
             }
@@ -594,4 +639,15 @@ public class SkinStorage {
     public String getDefaultSkinNameIfEnabled(String player) {
         return getDefaultSkinNameIfEnabled(player, false);
     }
+
+    //wip
+    /*public boolean iscustom(String skin) {
+        try {
+            //code
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
+    } */
 }

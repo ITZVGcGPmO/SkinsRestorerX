@@ -5,10 +5,12 @@ import java.io.*;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
 import lombok.Getter;
 import lombok.Setter;
 import skinsrestorer.shared.exception.SkinRequestException;
@@ -22,6 +24,12 @@ public class MineSkinAPI {
     @Getter
     @Setter
     private SkinStorage skinStorage;
+    @Setter
+    private SRLogger logger;
+
+    public MineSkinAPI(SRLogger logger) {
+        this.logger = logger;
+    }
 
     public String guessSkinType(String url) {
         try {
@@ -63,19 +71,14 @@ public class MineSkinAPI {
             try {
                 err_resp = "";
                 JsonObject obj;
-                try {
-                    output = queryURL("https://api.minetools.eu/mineskin/", query, 3000);
-                    JsonElement elm = new JsonParser().parse(output);
-                    obj = elm.getAsJsonObject();
-                    if (!(obj.has("cache") && obj.get("cache").getAsJsonObject().has("HIT") && obj.get("cache").getAsJsonObject().get("HIT").getAsBoolean()))
-                        MetricsCounter.incrAPI("https://api.mineskin.org/generate/url/");
-                    if (!(obj.get("data").getAsJsonObject().has("texture")))
-                        throw new Exception(); // throw exception if invalid response
-                } catch (Exception e) { // if minetools throws any exception, try mineskin api
-                    output = queryURL("https://api.mineskin.org/generate/url/", query, 5000);
-                    JsonElement elm = new JsonParser().parse(output);
-                    obj = elm.getAsJsonObject();
+
+                output = queryURL("https://api.mineskin.org/generate/url/", query, 90000);
+                if (output == "") { //when both api time out
+                    throw new SkinRequestException(Locale.ERROR_UPDATING_SKIN);
                 }
+                JsonElement elm = new JsonParser().parse(output);
+                obj = elm.getAsJsonObject();
+
                 if (obj.has("data")) {
                     JsonObject dta = obj.get("data").getAsJsonObject();
                     if (dta.has("texture")) {
@@ -85,25 +88,29 @@ public class MineSkinAPI {
                 } else if (obj.has("error")) {
                     err_resp = obj.get("error").getAsString();
                     if (err_resp.equals("Failed to generate skin data") || err_resp.equals("Too many requests")) {
-//                        System.out.println("[SkinsRestorer] MS API skin generation fail (accountId:"+obj.get("accountId").getAsInt()+"); trying again. ");
+                        logger.log("[SkinsRestorer] MS API skin generation fail (accountId:"+obj.get("accountId").getAsInt()+"); trying again... ");
                         if (obj.has("delay"))
                             TimeUnit.SECONDS.sleep(obj.get("delay").getAsInt());
                         return genSkin(url, isSlim); // try again if given account fails (will stop if no more accounts)
                     } else if (err_resp.equals("No accounts available")) {
-                        System.out.println(Locale.ERROR_MS_FULL);
+                        logger.log("[ERROR] MS No accounts available " + url);
                         throw new SkinRequestException(Locale.ERROR_MS_FULL);
                     }
                 }
             } catch (IOException e) {
-                System.out.println("[SkinsRestorer] MS API Failure (" + url + ") " + e.getLocalizedMessage());
+                logger.log(Level.WARNING, "[ERROR] MS API Failure IOException (connection/disk): (" + url + ") " + e.getLocalizedMessage());
+            } catch (JsonSyntaxException e) {
+                logger.log(Level.WARNING, "[ERROR] MS API Failure JsonSyntaxException (encoding): (" + url + ") " + e.getLocalizedMessage());
             }
         } catch (UnsupportedEncodingException e) {
-            System.out.println("[SkinsRestorer] [ERROR] UnsupportedEncodingException");
+            logger.log(Level.WARNING, "[ERROR] MS UnsupportedEncodingException");
         } catch (InterruptedException e) {
         }
         // throw exception after all tries have failed
+        logger.log("[ERROR] MS:could not generate skin url: " + url);
+        logger.log("[ERROR] MS:reason: " + err_resp);
         if (!(err_resp.matches("")))
-            throw new SkinRequestException(Locale.ERROR_MS_GENERIC.replace("%error%", err_resp));
+            throw new SkinRequestException(Locale.ERROR_INVALID_URLSKIN); //todo: consider sending err_resp to admins
         else
             throw new SkinRequestException(Locale.MS_API_FAILED);
     }
@@ -134,7 +141,7 @@ public class MineSkinAPI {
                 }
                 DataInputStream input = new DataInputStream(_is);
                 for (int c = input.read(); c != -1; c = input.read()) {
-                    outstr += (char) c;
+                    outstr += (char) c; //todo String concatenation in loop
                 }
                 input.close();
                 return outstr;

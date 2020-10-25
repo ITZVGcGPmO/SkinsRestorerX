@@ -10,9 +10,11 @@ import net.md_5.bungee.api.chat.TextComponent;
 import net.md_5.bungee.api.plugin.Plugin;
 import org.bstats.bungeecord.Metrics;
 import org.inventivetalent.update.spiget.UpdateCallback;
+import skinsrestorer.bungee.commands.GUICommand;
 import skinsrestorer.bungee.commands.SrCommand;
 import skinsrestorer.bungee.commands.SkinCommand;
 import skinsrestorer.bungee.listeners.LoginListener;
+import skinsrestorer.bungee.listeners.PluginMessageListener;
 import skinsrestorer.shared.storage.Config;
 import skinsrestorer.shared.storage.Locale;
 import skinsrestorer.shared.storage.SkinStorage;
@@ -32,7 +34,7 @@ public class SkinsRestorer extends Plugin {
     @Getter
     private boolean outdated;
     @Getter
-    private String configPath = "plugins" + File.separator + "SkinsRestorer" + File.separator + "";
+    private String configPath = getDataFolder().getPath();
 
     private CommandSender console;
     private UpdateChecker updateChecker;
@@ -48,6 +50,12 @@ public class SkinsRestorer extends Plugin {
     private MineSkinAPI mineSkinAPI;
     @Getter
     private SRLogger srLogger;
+    @Getter
+    private PluginMessageListener pluginMessageListener;
+    @Getter
+    private SkinCommand skinCommand;
+    @Getter
+    private SkinsRestorerBungeeAPI skinsRestorerBungeeAPI;
 
     public String getVersion() {
         return getDescription().getVersion();
@@ -56,12 +64,16 @@ public class SkinsRestorer extends Plugin {
 
     @Override
     public void onEnable() {
-        srLogger = new SRLogger();
-        Metrics metrics = new Metrics(this);
-        metrics.addCustomChart(new Metrics.SingleLineChart("mineskin_calls", MetricsCounter::collectMineskin_calls));
-        metrics.addCustomChart(new Metrics.SingleLineChart("minetools_calls", MetricsCounter::collectMinetools_calls));
-        metrics.addCustomChart(new Metrics.SingleLineChart("mojang_calls", MetricsCounter::collectMojang_calls));
-        metrics.addCustomChart(new Metrics.SingleLineChart("backup_calls", MetricsCounter::collectBackup_calls));
+        srLogger = new SRLogger(getDataFolder());
+
+        int pluginId = 1686; // SkinsRestorer's ID on bStats, for Bungeecord
+        Metrics metrics = new Metrics(this, pluginId);
+        if (metrics.isEnabled()) {
+            metrics.addCustomChart(new Metrics.SingleLineChart("mineskin_calls", MetricsCounter::collectMineskin_calls));
+            metrics.addCustomChart(new Metrics.SingleLineChart("minetools_calls", MetricsCounter::collectMinetools_calls));
+            metrics.addCustomChart(new Metrics.SingleLineChart("mojang_calls", MetricsCounter::collectMojang_calls));
+            metrics.addCustomChart(new Metrics.SingleLineChart("backup_calls", MetricsCounter::collectBackup_calls));
+        }
 
         console = getProxy().getConsole();
 
@@ -75,12 +87,16 @@ public class SkinsRestorer extends Plugin {
 
         instance = this;
 
+        this.skinStorage = new SkinStorage();
+
         // Init config files
         Config.load(configPath, getResourceAsStream("config.yml"));
         Locale.load(configPath);
 
         this.mojangAPI = new MojangAPI(this.srLogger);
-        this.mineSkinAPI = new MineSkinAPI();
+        this.mineSkinAPI = new MineSkinAPI(this.srLogger);
+
+        this.skinStorage.setMojangAPI(mojangAPI);
         // Init storage
         if (!this.initStorage())
             return;
@@ -100,7 +116,29 @@ public class SkinsRestorer extends Plugin {
         this.skinApplier = new SkinApplier(this);
         this.skinApplier.init();
 
+        // Init message channel
+        this.getProxy().registerChannel("sr:messagechannel");
+        this.pluginMessageListener = new PluginMessageListener(this);
+        this.getProxy().getPluginManager().registerListener(this, this.pluginMessageListener);
+
         multiBungee = Config.MULTIBUNGEE_ENABLED || ProxyServer.getInstance().getPluginManager().getPlugin("RedisBungee") != null;
+
+        // Init API
+        this.skinsRestorerBungeeAPI = new SkinsRestorerBungeeAPI(this, this.mojangAPI, this.skinStorage);
+
+        // Run connection check
+        ServiceChecker checker = new ServiceChecker();
+        checker.setMojangAPI(this.mojangAPI);
+        checker.checkServices();
+        ServiceChecker.ServiceCheckResponse response = checker.getResponse();
+
+        if (response.getWorkingUUID() == 0 || response.getWorkingProfile() == 0) {
+            console.sendMessage(TextComponent.fromLegacyText("§c[§4Critical§c] ------------------[§2SkinsRestorer §cis §c§l§nOFFLINE§c] --------------------------------- "));
+            console.sendMessage(TextComponent.fromLegacyText("§c[§4Critical§c] §cPlugin currently can't fetch new skins."));
+            console.sendMessage(TextComponent.fromLegacyText("§c[§4Critical§c] §cSee https://github.com/SkinsRestorer/SkinsRestorerX/wiki/Troubleshooting#connection for wiki "));
+            console.sendMessage(TextComponent.fromLegacyText("§c[§4Critical§c] §cFor support, visit our discord at https://discord.me/servers/skinsrestorer "));
+            console.sendMessage(TextComponent.fromLegacyText("§c[§4Critical§c] ------------------------------------------------------------------------------------------- "));
+        }
     }
 
     private void initCommands() {
@@ -110,26 +148,26 @@ public class SkinsRestorer extends Plugin {
 
         manager.getCommandConditions().addCondition("permOrSkinWithoutPerm", (context -> {
             BungeeCommandIssuer issuer = context.getIssuer();
-            if (issuer.hasPermission("skinsrestorer.playercmds") || Config.SKINWITHOUTPERM)
+            if (issuer.hasPermission("skinsrestorer.command") || Config.SKINWITHOUTPERM)
                 return;
 
             throw new ConditionFailedException("You don't have access to change your skin.");
         }));
         // Use with @Conditions("permOrSkinWithoutPerm")
 
-        CommandReplacements.getPermissionReplacements().forEach((k, v) -> manager.getCommandReplacements().addReplacement(k, v));
+        CommandReplacements.permissions.forEach((k, v) -> manager.getCommandReplacements().addReplacement(k, v));
         CommandReplacements.descriptions.forEach((k, v) -> manager.getCommandReplacements().addReplacement(k, v));
+        CommandReplacements.syntax.forEach((k, v) -> manager.getCommandReplacements().addReplacement(k, v));
 
         new CommandPropertiesManager(manager, configPath, getResourceAsStream("command-messages.properties"));
 
-        manager.registerCommand(new SkinCommand(this));
+        this.skinCommand = new SkinCommand(this);
+        manager.registerCommand(this.skinCommand);
         manager.registerCommand(new SrCommand(this));
+        manager.registerCommand(new GUICommand(this));
     }
 
     private boolean initStorage() {
-        this.skinStorage = new SkinStorage();
-        this.skinStorage.setMojangAPI(mojangAPI);
-
         // Initialise MySQL
         if (Config.USE_MYSQL) {
             try {
@@ -138,7 +176,8 @@ public class SkinsRestorer extends Plugin {
                         Config.MYSQL_PORT,
                         Config.MYSQL_DATABASE,
                         Config.MYSQL_USERNAME,
-                        Config.MYSQL_PASSWORD
+                        Config.MYSQL_PASSWORD,
+                        Config.MYSQL_CONNECTIONOPTIONS
                 );
 
                 mysql.openConnection();
@@ -146,7 +185,7 @@ public class SkinsRestorer extends Plugin {
 
                 this.skinStorage.setMysql(mysql);
             } catch (Exception e) {
-                console.sendMessage(new TextComponent("§e[§2SkinsRestorer§e] §cCan't connect to MySQL! Disabling SkinsRestorer."));
+                console.sendMessage(TextComponent.fromLegacyText("§e[§2SkinsRestorer§e] §cCan't connect to MySQL! Disabling SkinsRestorer."));
                 getProxy().getPluginManager().unregisterListeners(this);
                 getProxy().getPluginManager().unregisterCommands(this);
                 return false;
@@ -172,7 +211,7 @@ public class SkinsRestorer extends Plugin {
                     outdated = true;
 
                     updateChecker.getUpdateAvailableMessages(newVersion, downloadUrl, hasDirectDownload, getVersion(), false).forEach(msg -> {
-                        console.sendMessage(new TextComponent(msg));
+                        console.sendMessage(TextComponent.fromLegacyText(msg));
                     });
                 }
 
@@ -182,7 +221,7 @@ public class SkinsRestorer extends Plugin {
                         return;
 
                     updateChecker.getUpToDateMessages(getVersion(), false).forEach(msg -> {
-                        console.sendMessage(new TextComponent(msg));
+                        console.sendMessage(TextComponent.fromLegacyText(msg));
                     });
                 }
             });
